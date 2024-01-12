@@ -28,7 +28,7 @@ compression_ratio = 0.5  # adjust this value as needed
 contexts = input("Enter your contexts: ")
 
 # Split the contexts into chunks using the rolling window function
-contexts_chunks = list(rolling_window(contexts.split("\n"), 2000, 500))  # adjust window size and overlap as needed
+contexts_chunks = list(rolling_window(contexts.split("\n"), 2000, 200))  # adjust window size and overlap as needed
 
 for contexts in contexts_chunks:
     # Calculate the input length
