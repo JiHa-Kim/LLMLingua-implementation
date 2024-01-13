@@ -11,18 +11,50 @@ import torch
 import nltk
 import tiktoken
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
-from abc import ABC, abstractmethod
+from llama_cpp import Llama
+from huggingface_hub import hf_hub_download
+import os
 
 encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
 
-class BasePromptCompressor(ABC):
-    @abstractmethod
-    def __init__(self, model_name: str, device_map: str, model_config: dict, open_api_config: dict):
-        pass
 
-    @abstractmethod
-    def load_model(self, model_name: str, device_map: str, model_config: dict):
-        pass
+class LocalPromptCompressor:
+    def __init__(
+        self,
+        model_dir: str,
+        model_file: str,
+        device_map: str = "cuda",
+        model_config: dict = {},
+        open_api_config: dict = {},
+    ):
+        self.load_model(model_dir, model_file, device_map, model_config)
+        self.retrieval_model = None
+        self.retrieval_model_name = None
+        self.open_api_config = open_api_config
+        self.cache_bos_num = 10
+        self.prefix_bos_num = 100
+
+    def load_model(
+        self, model_dir: str, model_file: str, device_map: str = "cuda", model_config: dict = {}
+    ):
+        # Load the config and tokenizer
+        config = AutoConfig.from_pretrained(model_dir)
+        tokenizer = AutoTokenizer.from_pretrained(model_dir)
+
+        # Instantiate model from local file
+        model_path = os.path.join(model_dir, model_file)
+        model = Llama(
+            model_path=model_path,
+            n_ctx=2000,  # Context length to use
+            n_threads=4,  # Number of CPU threads to use
+            n_gpu_layers=20  # Number of model layers to offload to GPU
+        )
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.tokenizer = tokenizer
+        self.model = model
+        self.context_idxs = []
+        self.max_position_embeddings = config.max_position_embeddings
+
 
     def get_ppl(
         self,
@@ -1111,92 +1143,3 @@ class BasePromptCompressor(ABC):
         elif rank_method == "cohere":
             method = get_distance_cohere
         return method(context, question)
-
-  class LocalPromptCompressor(BasePromptCompressor):
-    def __init__(
-        self,
-        model_name: str = "NousResearch/Llama-2-7b-hf",  # Default model
-        device_map: str = "cuda",
-        model_config: dict = {},
-        open_api_config: dict = {},
-    ):
-        super().__init__(model_name, device_map, model_config, open_api_config)
-        self.model_name = model_name
-        self.device_map = device_map
-        self.model_config = model_config
-        self.open_api_config = open_api_config
-        self.cache_bos_num = 10
-        self.prefix_bos_num = 100
-
-    def load_model(
-        self, model_name: str, device_map: str = "cuda", model_config: dict = {}
-    ):
-        trust_remote_code = model_config.get("trust_remote_code", True)
-        if "trust_remote_code" not in model_config:
-            model_config["trust_remote_code"] = trust_remote_code
-        config = AutoConfig.from_pretrained(
-            model_name, trust_remote_code=trust_remote_code
-        )
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_name, trust_remote_code=trust_remote_code
-        )
-        if model_config.get("pad_to_left", True):
-            tokenizer.padding_side = "left"
-            tokenizer.pad_token_id = (
-                config.pad_token_id if config.pad_token_id else tokenizer.eos_token_id
-            )
-        self.device = (
-            device_map
-            if any(key in device_map for key in ["cuda", "cpu", "mps"])
-            else "cuda"
-        )
-        if "cuda" in device_map or "cpu" in device_map:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype="auto" if device_map == "cuda" else torch.float32,
-                device_map=device_map,
-                config=config,
-                ignore_mismatched_sizes=True,
-                **model_config,
-            )
-        else:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                device_map=device_map,
-                torch_dtype="auto",
-                pad_token_id=tokenizer.pad_token_id,
-                offload_folder="/tmp/offload",
-                offload_state_dict=True,
-                cache_dir="/tmp/cache",
-                **model_config,
-            )
-        self.tokenizer = tokenizer
-        self.model = model
-        self.context_idxs = []
-        self.max_position_embeddings = config.max_position_embeddings
-
-class OpenRouterPromptCompressor(BasePromptCompressor):
-    def __init__(
-        self,
-        model_name: str = "openchat/openchat-7b",  # Default model
-        device_map: str = "cuda",
-        model_config: dict = {},
-        open_api_config: dict = {},
-    ):
-        super().__init__(model_name, device_map, model_config, open_api_config)
-        # Initialize the OpenAI client
-        self.client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=getenv("OPENROUTER_API_KEY"),
-        )
-
-        self.model_name = model_name
-        self.device_map = device_map
-        self.model_config = model_config
-        self.open_api_config = open_api_config
-        self.cache_bos_num = 10
-        self.prefix_bos_num = 100
-
-    def load_model(self, model_name: str, device_map: str, model_config: dict):
-        # No need to load the model locally, just store the model name
-        self.model_name = model_name
